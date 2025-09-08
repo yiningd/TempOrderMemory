@@ -1,0 +1,1149 @@
+---
+title: "TempOrder_Exp1a_Analysis"
+author: "Yining Ding"
+date: "2025-02-18"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: 6
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '6'
+---
+Dataset: 74 SONA participants collected in 2023/04. 34 were excluded, totaling 40 used in the actual analysis.
+  
+```{r message = FALSE, warning = FALSE}
+# Basic
+library(psych)
+library(tidyverse)
+library(dplyr)
+# Analysis
+library(lme4)
+library(lmerTest)
+library(performance)
+library(jtools)
+library(optimx)
+library(lsr)
+library(emmeans)
+library(car)  
+library(brglm2)
+library(plotrix) # calculating SE
+library(qdap) # count_syllable
+# Plotting
+library(ggplot2)
+library(lattice) 
+library(sjPlot)
+library(ggpubr)
+library(DHARMa)
+library(ggsignif)
+# Disable scientific notation
+options(scipen=999) 
+```
+
+```{r}
+# GLMER Optimizers
+cl1 <- glmerControl(optimizer = "bobyqa", calc.derivs = FALSE, optCtrl = list(maxfun = 1e+09), check.conv.grad = .makeCC("warning",
+tol = 0.002, relTol = NULL), check.conv.singular = .makeCC(action = "message", tol = 1e-09), check.conv.hess = .makeCC(action = "warning", tol = 0.000001))
+cl2 <- glmerControl(optimizer = "Nelder_Mead", calc.derivs = FALSE, optCtrl = list(maxfun = 1e+09), check.conv.grad = .makeCC("warning", tol = 0.002, relTol = NULL), check.conv.singular = .makeCC(action = "message", tol = 1e-09), check.conv.hess = .makeCC(action = "warning", tol = 0.000001))
+cl3 <- glmerControl(optimizer = "optimx", calc.derivs = FALSE, optCtrl = list(method = "nlminb", maxiter = 1e+09), check.conv.grad = .makeCC("warning", tol = 0.002, relTol = NULL), check.conv.singular = .makeCC(action = "message", tol = 1e-09), check.conv.hess = .makeCC(action = "warning", tol = 0.000001))
+cl4 <- glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE, optCtrl = list(maxfun = 1e+09), check.conv.grad = .makeCC("warning", tol = 0.002, relTol = NULL), check.conv.singular = .makeCC(action = "message",
+tol = 1e-09), check.conv.hess = .makeCC(action = "warning",
+tol = 0.000001))
+
+# LMER Optimizers
+cl_a <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e+09))
+cl_b <- lmerControl(optimizer = "Nelder_Mead", optCtrl = list(maxfun = 1e+09))
+cl_c <- lmerControl(optimizer = "optimx", optCtrl = list(method = "nlminb",
+    maxiter = 1e+09))
+cl_d <- lmerControl(optimizer = "nloptwrap", optCtrl = list(maxfun = 1e+09))
+```
+
+# 1. Data Prep
+## 1.1 Import data files
+```{r}
+# set the path of the folder containing CSV files
+folder_path <- "/Users/dcl/Library/CloudStorage/Box-Box/DCL_ARCHIVE/Documents/Events/exp165_TemporalOrder/Manuscript/Complete_Data/Data_Deidentification/Data_Exp1a"
+
+# get the list of CSV files in the folder
+csv_files <- list.files(folder_path, pattern = "*.csv")
+
+# initialize an empty list to store dataframes
+df_list <- list()
+
+# loop through the list of CSV files, reading each file into a dataframe and adding it to the list
+for (csv_file in csv_files) {
+  df <- read.csv(file.path(folder_path, csv_file))
+  df_list[[csv_file]] <- df
+}
+
+# combine all dataframes in the list into a single dataframe
+combined_df <- do.call(rbind, df_list)
+```
+
+```{r}
+# Select Demographic Information
+demographics_combined_df <- combined_df %>% filter(task == "demographics") %>% 
+  dplyr::select('run_id', 'response')
+```
+
+```{r}
+# Helper Function 1: Extract Age
+extract_text_between_age_and_gender <- function(text) {
+  pattern <- "(?<=\\bage\\b)(.*?)(?=\\bgender\\b)"
+  matches <- regmatches(text, gregexpr(pattern, text, perl = TRUE))
+  unlist(matches)
+}
+# Helper Function 2: Extract Gender
+extract_text_between_gender_and_race <- function(text) {
+  pattern <- "(?<=\\bgender\\b)(.*?)(?=\\brace\\b)"
+  matches <- regmatches(text, gregexpr(pattern, text, perl = TRUE))
+  unlist(matches)
+}
+# Helper Function 3: Eliminate Text 
+eliminate_text <- function(text){
+  gsub("\\D", "", text)
+}
+# Helper Function 4: Eliminate Symbols
+eliminate_symbols <- function(text){
+  gsub("[[:punct:]]", "", text)
+}
+
+# Helper Function 5: Count "Yes"
+count_yes <- function(input_string) {
+  matches <- gregexpr("Yes", input_string, ignore.case = TRUE)
+  match_count <- sum(sapply(matches, function(x) if (x[1] == -1) 0 else length(x)))
+  return(match_count)
+}
+  
+# Helper Function 6: Extract Race
+extract_text_between_race_and_hispLat <- function(text) {
+  pattern <- "(?<=\\brace\\b)(.*?)(?=\\bhispanicLatino\\b)"
+  matches <- regmatches(text, gregexpr(pattern, text, perl = TRUE))
+  unlist(matches)
+}
+
+# Helper Function 7: Extract Education_years
+extract_education_years <- function(text) {
+  return(substr(text, 21, 22))
+}
+  
+# Helper Function 8: Extract HispanicLatino
+extract_hispLat <- function(text) {
+  string_length <- nchar(text)
+  return(substr(text, string_length - 5, string_length - 1))
+}
+```
+
+```{r}
+# Get Age Information
+demographics_combined_df$age_raw <- apply(demographics_combined_df[, "response", drop = FALSE], 1, extract_text_between_age_and_gender)
+demographics_combined_df$age <- apply(demographics_combined_df[, "age_raw", drop = FALSE], 1, eliminate_text)
+demographics_combined_df$age <- as.numeric(demographics_combined_df$age)
+
+# Get Gender Information
+demographics_combined_df$gender_raw <- apply(demographics_combined_df[, "response", drop = FALSE], 1, extract_text_between_gender_and_race)
+demographics_combined_df$gender <- apply(demographics_combined_df[, "gender_raw", drop = FALSE], 1, eliminate_symbols)
+
+# Get Race Information
+demographics_combined_df$race_raw <- apply(demographics_combined_df[, "response", drop = FALSE], 1, extract_text_between_race_and_hispLat)
+demographics_combined_df$race <- apply(demographics_combined_df[, "race_raw", drop = FALSE], 1, eliminate_symbols)
+
+# Get Education_years Information
+demographics_combined_df$edu_years <- apply(demographics_combined_df[, "response", drop = FALSE], 1, extract_education_years)
+
+# Get Hispanic/Latino Information
+demographics_combined_df$hispLat_raw <- apply(demographics_combined_df[, "response", drop = FALSE], 1, extract_hispLat)
+demographics_combined_df$hispLat <- apply(demographics_combined_df[, "hispLat_raw", drop = FALSE], 1, eliminate_symbols)
+```
+
+```{r}
+# Select only useful columns
+demographics_df <- demographics_combined_df %>% 
+  dplyr::select('run_id', 'age', 'gender', 'race', 'edu_years', 'hispLat')
+```
+
+```{r}
+# Get Gender Distribution
+gender_df <- as.data.frame(table(demographics_df$gender))
+gender_df <- gender_df %>% rename(Gender = Var1, 
+                                  Number = Freq)
+gender_df$percentage <- gender_df$Number / nrow(demographics_df)
+gender_df
+
+# Get Race Distribution
+race_df <- as.data.frame(table(demographics_df$race))
+race_df <- race_df %>% rename(Race = Var1, 
+                              Number = Freq)
+race_df$percentage <- race_df$Number / nrow(demographics_df)
+race_df
+
+# Get Hispanic/Latino Distribution
+hispLat_df <- as.data.frame(table(demographics_df$hispLat))
+hispLat_df <- hispLat_df %>% rename(HispanicLatino = Var1, 
+                                    Number = Freq)
+hispLat_df$percentage <- hispLat_df$Number / nrow(demographics_df)
+hispLat_df
+```
+
+```{r}
+# Fix typo in responses
+edu_years_info <- demographics_df %>% dplyr::select('run_id', 'edu_years')
+edu_years_info <- edu_years_info %>% 
+  mutate(edu_years = case_when(
+    edu_years == "1." ~ "13",
+    edu_years == "2" ~ "14",
+    edu_years == "2\"" ~ "14",
+    edu_years == "3\"" ~ "15", 
+    edu_years == "4\"" ~ "16",
+    TRUE ~ edu_years  # Keeps other values unchanged
+  ))
+```
+
+```{r}
+# Get Education Years Distribution
+# edu_years_info
+edu_years_df <- as.data.frame(table(edu_years_info$edu_years))
+edu_years_df <- edu_years_df %>% rename(Education_Years = Var1, 
+                                        Number = Freq)
+mean(as.numeric(edu_years_info$edu_years))
+sd(as.numeric(edu_years_info$edu_years))
+```
+
+```{r}
+# Get Age Distribution
+mean(demographics_combined_df$age)
+sd(demographics_combined_df$age)
+nrow(demographics_combined_df)
+
+min(demographics_combined_df$age)
+max(demographics_combined_df$age)
+```
+
+```{r}
+# Time elapsed when the test phase of the 1st story started
+time_at_1st_test <- combined_df %>% subset(trial_index == 118) 
+# Time elapsed when the encoding phase of the 1st story started
+time_at_1st_story <- combined_df %>% subset(trial_index == 59)
+
+# Record each participant's delay time (for distraction task)
+time_diff <- as.data.frame(time_at_1st_test$time_elapsed - time_at_1st_story$time_elapsed)
+time_diff <- as.data.frame(cbind(time_at_1st_test$run_id, time_diff$`time_at_1st_test$time_elapsed - time_at_1st_story$time_elapsed`))
+# convert delay time to minutes
+time_diff$diff <- time_diff$V2 / 1000 / 60
+#time_diff %>% arrange(desc(diff))
+mean(time_diff$diff)
+sd(time_diff$diff)
+```
+
+## 1.2 Clean data
+```{r TOM - prep}
+# select useful columns
+complete_data <- combined_df %>% 
+  dplyr::select('run_id', 'rt', 'time_elapsed', 'response', 'trial_index', 'trial_type', 'task', 'stimuli_type', 'stimuli_name', 'total_count', 'coarse_count', 'fine_within_count', 'event_sentence', 'pair_num', 'pair_location', 'pair_first','pair_second', 'pair_type', 'curr_first', 'curr_second', 'normal0_shuffle1', 'correct_answer', 'correct') 
+```
+
+## 2. Data Exclusion
+### 2.1 Removing individual participants
+Criteria 1: Exclude - Subjects who reported technical problems (Excluded = 2)
+```{r}
+# complete_data %>% 
+#  filter(task == 'ending_questions') %>% 
+#  dplyr::select(run_id, response)
+```
+
+```{r}
+# Store problematic IDs for Criteria 1 (reported technical problems)
+exclusion_c1_list <- c(112, 84)
+```
+
+Criteria 2: Exclude - Subjects whose reaction time > 40000 ms for more than 5 individual trials or < 300 ms for more than 5 individual trials that require meaningful responses
+```{r, warning = FALSE, message = FALSE}
+# Frequency Histogram of RT distribution prior to data exclusion
+complete_data$rt <- as.numeric(complete_data$rt)
+complete_data %>%
+  filter(task == 'encoding_sentence' | task == 'TOM' | task == 'TOM_Conf' | task == 'Distance') %>%
+  ggplot(aes(x=rt)) +
+    geom_histogram(binwidth = 500) +
+    coord_cartesian(xlim = c(0, 70000)) +
+    labs(title = "Frequency Histogram of RT distribution prior to data exclusion", x = "Reaction Time", y = "Count")
+```
+
+```{r}
+# Filter out problematic IDs (problematic: rt > 40000 ms for > 5 trials, or < 300 ms for > 5 trials)
+trial_too_long <- complete_data %>% filter(task == 'encoding_sentence'| task == 'TOM' | task == 'TOM_Conf' | task == 'Distance') %>% filter(rt > 40000) %>% group_by(run_id) %>% summarize(num_trial_too_long = sum(rt > 40000)) %>% filter(num_trial_too_long > 5)
+# trial_too_long 
+trial_too_short <- complete_data %>% filter(task == 'encoding_sentence' | task == 'TOM' | task == 'TOM_Conf' | task == 'Distance') %>% filter(rt < 300) %>% group_by(run_id) %>% summarize(num_trial_too_short = sum(rt < 300)) %>% filter(num_trial_too_short > 5)
+# trial_too_short 
+
+# Store problematic IDs for Criteria 2.1 (rt > 40000 ms for > 5 trials)
+exclusion_c2.1_list <- trial_too_long$run_id 
+
+# Store problematic IDs for Criteria 2.2 (rt < 300 ms for > 5 trials)
+exclusion_c2.2_list <- trial_too_short$run_id  
+```
+
+```{r}
+length(unique(exclusion_c2.2_list, exclusion_c2.1_list))
+```
+
+
+Criteria 3: Exclude subjects whose mean accuracy for Math Questions < 75%
+```{r}
+## Math_data: filter out only math data
+Math_data <- complete_data %>% 
+  filter(task == 'math')
+
+# Factorization & Score math problems
+Math_data$math_correct_resp <- tolower(Math_data$correct)
+Math_data$math_correct <- ifelse(Math_data$math_correct_resp == "true", 1, 0)
+
+# Frequency Histogram of Math Accuracy distribution prior to data exclusion
+Math_data_mean_bySub <- Math_data %>% 
+  group_by(run_id) %>% 
+  summarize(meanMath = mean(math_correct))
+Math_data_mean_bySub %>% 
+  ggplot(aes(x=meanMath)) +
+    geom_histogram() + 
+  labs(title = "Frequency Histogram of Math Accuracy distribution prior to data exclusion", x = "Mean Math Accuracy", y = "count")
+
+# Filter out subjects that have < 75% mean accuracy for math questions
+Math_too_low <- Math_data_mean_bySub %>% filter(meanMath < 0.75) 
+
+# Store problematic IDs for Criteria 3 (Mean Math Accuracy < 75%)
+exclusion_c3_list <- Math_too_low$run_id
+```
+
+Criteria 4: Exclude - Subjects whose Temporal Order Memory Mean Accuracy is below 3SD from group mean
+```{r exclude 4, warning=FALSE, message=FALSE}
+## TOM_raw_data: only TOM data
+TOM_raw_data <- complete_data %>% 
+  filter(task == 'TOM')
+
+# Scoring: compare response with correct answer to get TOM_result (0/1)
+TOM_raw_data$TOM_response <- as.numeric(TOM_raw_data$response)
+TOM_raw_data$TOM_result <- as.numeric(TOM_raw_data$response == TOM_raw_data$correct_answer)
+
+# Determine upper and lower limit (+/-3SD)
+low_CI_TOM <-  mean(TOM_raw_data$TOM_result) - 3 * sd(TOM_raw_data$TOM_result)
+
+# Calculate TOM accuracy
+TOM_raw_data_bySub <- TOM_raw_data %>% group_by(run_id) %>% summarize(meanTOM = mean(TOM_result))
+TOM_raw_data_bySub <- ungroup(TOM_raw_data_bySub)
+TOM_raw_data_bySub <- as.data.frame(TOM_raw_data_bySub)
+
+# Frequency Histogram of mean TOM accuracy prior to data exclusion
+TOM_raw_data_bySub %>% ggplot(aes(x=meanTOM)) +
+    geom_histogram() + 
+  labs(title = "Frequency Histogram of Mean TOM Accuracy prior to data exclusion", x = "Mean TOM Accuracy", y = "Count")
+
+# Lower Limit: Exclude no one
+trial_TOM_too_low <- TOM_raw_data_bySub %>% filter(meanTOM < low_CI_TOM) 
+
+# Store problematic IDs for Criteria 4 (Mean TOM Accuracy < 3SD below group mean)
+exclusion_c4_list <- trial_TOM_too_low$run_id 
+```
+
+Data Exclusion Decision:
+```{r, warning=FALSE, message = FALSE}
+# Decision: Merge ID lists from Criteria 1-4
+exclusion_complete_list <- unique(c(exclusion_c1_list, exclusion_c2.1_list, exclusion_c2.2_list, exclusion_c3_list, exclusion_c4_list))
+# exclusion_complete_list # Print out IDs to be removed
+
+# In "complete_data" dataframe, tag all the trials that are excluded based on subject exclusion criteria
+complete_data$excluded_by_subject <- ifelse(complete_data$run_id %in% exclusion_complete_list, yes = "TRUE", no = "FALSE")
+
+# Create "main_data" dataframe: Exclude problematic subjects, and filter to only include trials that are relevant in the analysis
+main_data <- complete_data[!(complete_data$run_id %in% exclusion_complete_list), ] %>% filter(task == 'encoding_sentence' | task == 'TOM' | task == 'TOM_Conf' | task == 'Distance')
+main_data$stimuli_type <- ifelse(test = main_data$stimuli_type == "HC", yes = "CS", no = "FS") # For stimuli_type, Change all "HC" to "CS" and all "LC" to "FS" to avoid confusion in condition naming
+
+# Sample Size after data exclusion
+nSample <- length(unique(main_data$run_id))
+nSample # Print out sample size after removal
+
+# id_list after data exclusion
+id_list <- unique(main_data$run_id)
+```
+
+
+### 2.2 Excluding individual trials
+#### 2.2.1 Encoding Trials
+Criterion: Exclude all encoding trials that have reaction time < 300 ms, or > 3SD above the mean reaction time of sentences that are not the opening (first) or the concluding (last) sentences of each narrative.
+```{r}
+# Create "encoding_rt_raw" dataframe for encoding trials
+raw_encoding_rt <- main_data %>% filter(task == "encoding_sentence") %>% dplyr::select(-c('pair_num', 'pair_location', 'pair_first','pair_second', 'pair_type', 'curr_first', 'curr_second', 'normal0_shuffle1', 'correct_answer', 'correct'))
+
+# Tag all the trials that are excluded by being opening and ending sentences in each narrative
+raw_encoding_rt$excluded_by_loc <- ifelse(raw_encoding_rt$fine_within_count == 0 | raw_encoding_rt$fine_within_count == 99 | raw_encoding_rt$total_count == 0 | raw_encoding_rt$total_count == 99, yes = TRUE, no = FALSE)
+
+# Calculate encoding_rt upper limit: 3SD above mean (excluding opening and ending sentences)
+encoding_rt_upperLim <- as.numeric(raw_encoding_rt %>% filter(excluded_by_loc == FALSE) %>% summarize(upperLim = mean(rt) + 3 * sd(rt)))
+encoding_rt_upperLim # Print out encoding_rt upper limit: 210031 ms
+
+# Tag all the trials that are excluded by rt < 300 or > 3SD above mean
+raw_encoding_rt$excluded_by_rt <- ifelse(raw_encoding_rt$rt > encoding_rt_upperLim | raw_encoding_rt$rt < 300, yes = TRUE, no = FALSE)
+mean(raw_encoding_rt$excluded_by_rt == TRUE) # Print out the proportion of encoding trials being excluded based on rt criterion
+
+# Create "encoding_rt_main" dataframe: Assign fine / coarse sentence location before filtering out problematic trials
+encoding_rt_main <- raw_encoding_rt %>% filter(excluded_by_loc == FALSE)
+encoding_rt_main$fine_loc <- rep(c(1, 2, 3, 4, 5), nrow(encoding_rt_main)/5) # Assign fine-level location to each sentence trial
+encoding_rt_main$coarse_loc <- rep(rep(1:5, each = 5), times = nrow(encoding_rt_main)/25) # Assign coarse-level event membership to each sentence trial
+encoding_rt_main$sentence_index <- rep(rep(1:25, each = 1), times = nrow(encoding_rt_main)/25) # NEW: Assign sentence index to each sentence trial
+
+encoding_rt_main$fine_loc_type <- ifelse(test = encoding_rt_main$fine_loc == 1, yes = "Boundary", no = "Non-boundary")
+encoding_rt_main$coarse_loc_type <- ifelse(test = encoding_rt_main$coarse_loc == 1, yes = "First Coarse Event", no = "Other Event")
+
+# Create "encoding_rt_data" dataframe: Filter out problematic trials
+encoding_rt_data <- encoding_rt_main %>% filter(excluded_by_rt == FALSE)
+encoding_rt_data$logRT <- log(encoding_rt_data$rt)
+
+# as.factor() certain trials
+encoding_rt_data <- mutate(encoding_rt_data, stimuli_type = as.factor(stimuli_type), stimuli_name = as.factor(stimuli_name), fine_loc_type = as.factor(fine_loc_type), coarse_loc_type = as.factor(coarse_loc_type), run_id = as.factor(run_id))
+```
+
+#### 2.2.2 Recency Judgment (aka Temporal Order Memory) Trials
+Criterion: Exclude TOM trials that has RT < 300 ms or > 3SD above mean RT of all TOM trials.
+```{r}
+# Create "TempOrder_data" dataframe that includes TOM, TOM Confidence, and Temporal Distance Data for the same event pairs
+TempOrder_data <- main_data %>% filter(task == "TOM") %>% dplyr::select(-c(total_count, coarse_count, fine_within_count, event_sentence, correct, excluded_by_subject))
+
+TempOrder_data$TOM_response <- as.numeric(TempOrder_data$response) 
+TempOrder_data$TOM_result <- as.numeric(TempOrder_data$response == TempOrder_data$correct_answer) # Column TOM_result: Temporal Order Memory accuracy after scoring
+TempOrder_data$TOM_rt <- TempOrder_data$rt # Column TOM_rt: Reaction Time for Temporal Order Memory
+
+TD_data <- main_data %>% filter(task == "Distance")
+TOM_Conf_data <- main_data %>% filter(task == "TOM_Conf")
+TD_data$TD_rt <- TD_data$rt
+TOM_Conf_data$TOM_Conf_rt <- TOM_Conf_data$rt
+
+# Add TD and TOM_Conf data into TempOrder_data dataframe
+TempOrder_data$TD <- TD_data$response # Column TD: Temporal Distance Rating
+TempOrder_data$TOM_Conf <- TOM_Conf_data$response # Column TOM_Conf: Temporal Order Memory Confidence
+TempOrder_data$TD_rt <- TD_data$TD_rt  # Column TD_rt: Reaction Time for Temporal Distance Rating
+TempOrder_data$TOM_Conf_rt <- TOM_Conf_data$TOM_Conf_rt # Column TOM_Conf_rt: Reaction Time for Temporal Order Memory Confidence
+
+# as.numeric certain columns
+TempOrder_data <- mutate(TempOrder_data, TOM_rt = as.numeric(TOM_rt), TOM_Conf_rt= as.numeric(TOM_Conf_rt), TD_rt = as.numeric(TD_rt), TD = as.numeric(TD), TOM_Conf = as.numeric(TOM_Conf))
+
+# create event_pair_type and each_pair column
+TempOrder_data$event_pair_type <- paste(TempOrder_data$stimuli_type, TempOrder_data$pair_type, sep = "_")
+TempOrder_data$each_pair <- paste(TempOrder_data$stimuli_name, TempOrder_data$pair_num, sep = "_")
+
+# as.factor certain columns
+TempOrder_data <- mutate(TempOrder_data, stimuli_type = as.factor(stimuli_type), stimuli_name = as.factor(stimuli_name), pair_type = as.factor(pair_type), event_pair_type = as.factor(event_pair_type), each_pair = as.factor(each_pair))
+
+# Calculate TOM_rt upper limit: 3SD above mean 
+TOM_rt_upperLim <- as.numeric(TempOrder_data %>% summarize(upperLim = mean(TOM_rt) + 3 * sd(TOM_rt)))
+TOM_rt_upperLim  # Print out TOM_rt upper limit: 22050 ms
+
+# Tag all the TOM trials that are excluded by rt < 300 or > 3SD above mean
+TempOrder_data$excluded_by_TOMrt <- ifelse(TempOrder_data$TOM_rt > TOM_rt_upperLim | TempOrder_data$TOM_rt < 300, yes = TRUE, no = FALSE)
+mean(TempOrder_data$excluded_by_TOMrt == TRUE) # Print out the proportion of TOM trials being excluded based on rt criterion
+
+# Create TOM_data dataframe that excluded problematic TOM trials
+TOM_data <- TempOrder_data %>% filter(excluded_by_TOMrt == FALSE)
+```
+
+```{r}
+# Graph the distribution of Temporal Order Memory Trial Accuracy across event_pair_types
+TOM_data_dist <- ggplot(TOM_data, aes(x = as.factor(TOM_result), fill = event_pair_type)) + 
+  geom_bar() +
+  labs(title = "Distribution of Temporal Order Memory Accuracy grouped by event pair types", x = "Temporal Order Memory Trial Accuracy", y = "Count")
+TOM_data_dist
+```
+
+#### 2.2.3 Temporal Order Memory Confidence Trials
+Criteria: (1) Exclude TOM Confidence trials that has RT < 300 ms or > 3SD above mean RT of all Confidence trials, and exclude (2) TOM Confidence trials that have its corresponding TOM trial being excluded in 2.2.2
+```{r}
+# Calculate TOM_Conf_rt upper limit: 3SD above mean 
+TOM_Conf_rt_upperLim <- as.numeric(TempOrder_data %>% summarize(upperLim = mean(TOM_Conf_rt) + 3 * sd(TOM_Conf_rt)))
+TOM_Conf_rt_upperLim # Print out TOM_rt upper limit: 7491 ms
+
+# Tag all the TOM_Conf trials that are excluded by (1) rt < 300 or > 3SD above mean, or (2) when its corresponding TOM trial is excluded
+TempOrder_data$excluded_by_TOM_Conf_rt <- ifelse(TempOrder_data$TOM_Conf_rt > TOM_Conf_rt_upperLim | TempOrder_data$TOM_Conf_rt < 300, yes = TRUE, no = FALSE)
+mean(TempOrder_data$excluded_by_TOM_Conf_rt == TRUE) # Print out the proportion of TOM_Conf trials being excluded based on the criterion
+
+# Create TOM_Conf_data dataframe that excluded problematic TOM trials and problematic TOM_Conf trials
+TOM_Conf_data <- TempOrder_data %>% filter(excluded_by_TOMrt == FALSE & excluded_by_TOM_Conf_rt == FALSE)
+```
+
+```{r}
+# Graph the distribution of Temporal Order Memory Confidence across event_pair_types
+TOM_Conf_data_dist <- ggplot(TOM_Conf_data, aes(x = TOM_Conf, fill = event_pair_type)) + 
+  geom_histogram() +   
+  labs(title = "Distribution of Temporal Order Memory Confidence grouped by event pair types", x = "Temporal Order Memory Confidence", y = "Count")
+TOM_Conf_data_dist
+```
+
+```{r, warning = FALSE}
+# Since 100 is the mode, we use 90 as the cutoff for converting TOM_Conf into a binary variable 
+# Binary TOM Confidence: "High Confidence" (Confidence > 90) vs. "Low Confidence" (Confidence < 90)
+TOM_Conf_data$TOM_ConfGroup <- ifelse(test = TOM_Conf_data$TOM_Conf > 90, yes = "High Confidence", no = "Low Confidence")
+TOM_Conf_data$TOM_resultGroup <- ifelse(test = TOM_Conf_data$TOM_result == 1, yes = "Correct", no = "Wrong")
+
+# If use 90 as cutoff, 52% TOM trials are in low confidence group, 48% TOM trials are in high confidence group
+mean(TOM_Conf_data$TOM_ConfGroup == "High Confidence") 
+mean(TOM_Conf_data$TOM_ConfGroup == "Low Confidence") 
+
+#TOM_Conf_data %>% ggplot(aes(x = TOM_ConfGroup, fill = TOM_resultGroup)) +
+# geom_histogram(stat = "count", position = "dodge") + 
+#  facet_wrap(~event_pair_type) +
+#  labs(title = "TOM Confidence Distribution in Different Conditions", x = "Confidence (High/Low)", y = "Count")
+```
+
+#### 2.2.3 Temporal Distance Rating Trials
+Criteria: (1) Exclude Temporal Distance Rating trials that have RT < 300 ms or > 3SD above mean RT of all Temporal Distance Rating trials, and exclude (2) outlier trials that has extremely low frequency
+```{r}
+# Calculate TD_rt upper limit: 3SD above mean 
+TD_rt_upperLim <- as.numeric(TempOrder_data %>% summarize(upperLim = mean(TD_rt) + 3 * sd(TD_rt)))
+TD_rt_upperLim # Print TD_rt upper limit: 17357 ms
+
+# Tag all the Temporal Distance trials that are excluded by rt < 300 or > 3SD above mean
+TempOrder_data$excluded_by_TD_rt <- ifelse(TempOrder_data$TD_rt > TD_rt_upperLim | TempOrder_data$TD_rt < 300, yes = TRUE, no = FALSE)
+mean(TempOrder_data$excluded_by_TD_rt == TRUE)
+
+# Create TOM_Conf_data dataframe that excluded problematic TOM trials and problematic TOM_Conf trials
+TD_data <- TempOrder_data %>% filter(excluded_by_TD_rt == FALSE)
+```
+```{r}
+# Graph the distribution of Temporal Distance Rating across different event_pair_types
+TD_data_dist <- ggplot(TD_data, aes(x = TD, fill = event_pair_type)) + 
+  geom_histogram() +
+  labs(title = "Frequency Distribution of Temporal Distance Rating", x = "Temporal Distance Rating")
+TD_data_dist
+```
+
+# 2. Data Analysis of Encoding Time
+
+Hypotheses:  
+
+  -  Boundary Sentences (fine_loc == 1) will require longer encoding time than Non-Boundary sentences (fine_loc == 2/3/4/5), when controlling for stimuli type and coarse event type (First Coarse Event vs. Other Events). 
+  -  In addition, the extent to which boundary status affects encoding time depends on the level of coarse event status, when controlling for stimuli type. Specifically, we hypothesize that in the first coarse event in a narrative, the extent to which boundary sentence requires longer encoding time than other sentences is larger than in other coarse events.
+ 
+  - Model: Mixed Effects Linear Regression Model
+  - Outcome variable: Encoding time (log-transformed to ensure normality of the residuals)
+  - Predictors: fine_loc_type (Boundary vs. Non-boundary) * stimuli_type (CS narrative vs. FS narrative) + coarse_loc_type (First Coarse Event vs. Other event)
+  - Random Effects: run_id (subject) + stimuli_name (narrative)
+  
+```{r}
+mean(encoding_rt_data$rt)
+std.error(encoding_rt_data$rt)
+sd(encoding_rt_data$rt)
+```
+
+```{r}
+encoding_rt_raw_data_summ <- encoding_rt_data %>% 
+  group_by(coarse_loc_type, fine_loc_type) %>% 
+  summarize(meanRT = mean(rt),
+            sdRT = sd(rt),
+            num_obs = n())
+
+encoding_rt_raw_data_summ
+```
+
+```{r}
+# Apply contrast coding to RT data
+encoding_rt_data_new <- encoding_rt_data
+contrasts(encoding_rt_data_new$fine_loc_type) <- contr.sum(2)
+contrasts(encoding_rt_data_new$coarse_loc_type) <- contr.sum(2)
+contrasts(encoding_rt_data_new$stimuli_type) <- contr.sum(2)
+```
+
+```{r}
+# Check contrast coding
+contrasts(encoding_rt_data_new$fine_loc_type)
+contrasts(encoding_rt_data_new$coarse_loc_type)
+contrasts(encoding_rt_data_new$stimuli_type)
+```
+
+```{r}
+# Add a column of counted syllables in each sentence (function from package "qdap")
+encoding_rt_data_new$num_syllable <- syllable_sum(encoding_rt_data_new$event_sentence)
+# Add a column indexing each sentence
+encoding_rt_data_new$each_sentence <- paste(encoding_rt_data_new$stimuli_name, encoding_rt_data_new$fine_within_count, sep = "_")
+```
+
+```{r, warning = FALSE, message= FALSE}
+# Model 1: Random slope of fine_loc_type * coarse_loc_type by subject (does not converge), and random intercept of stimuli (Did not converge)
+# encoding_logRT_maximal_model <- lmer(logRT ~ fine_loc_type * coarse_loc_type + stimuli_type + (fine_loc_type * coarse_loc_type #|run_id) + (1|stimuli_name), data = encoding_rt_data_new, control = cl_d) 
+
+# Model 2: Random slope of fine-level location type by subject, and random intercept of stimuli
+encoding_logRT_SlopeFineLoc_model <- lmer(logRT ~ fine_loc_type * coarse_loc_type + stimuli_type + (fine_loc_type | run_id) + (1|stimuli_name), data = encoding_rt_data_new) 
+
+# Model 3: Random slopes of coarse_loc_type type by subject, and random intercept of stimuli
+encoding_logRT_SlopeCoarseLoc_model <- lmer(logRT ~ fine_loc_type * coarse_loc_type + stimuli_type + (coarse_loc_type | run_id) + (1|stimuli_name), data = encoding_rt_data_new) 
+
+# Model 4: Random slopes of stimuli_type by subject, and random intercept of stimuli
+encoding_logRT_SlopeStimuliType_model <- lmer(logRT ~ coarse_loc_type * fine_loc_type + stimuli_type + (stimuli_type | run_id) + (1|stimuli_name), data = encoding_rt_data_new) 
+
+# Model 5: Random intercepts of subject and stimuli
+encoding_logRT_Intercept_model <- lmer(logRT ~ fine_loc_type * coarse_loc_type + stimuli_type + (1| run_id) + (1|stimuli_name), data = encoding_rt_data_new) 
+
+# Model Comparison favors Model 4
+anova(encoding_logRT_Intercept_model, encoding_logRT_SlopeStimuliType_model, encoding_logRT_SlopeCoarseLoc_model, encoding_logRT_SlopeFineLoc_model)
+```
+
+```{r}
+# Select Model 4 as encoding_logRT_model: 
+encoding_logRT_model <- encoding_logRT_SlopeStimuliType_model
+summ(encoding_logRT_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r}
+# Report F value and p value from ANOVA! 
+anova(encoding_logRT_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r, warning = FALSE, message= FALSE}
+emmean_RT_summ <- emmeans(encoding_logRT_model, specs = ~ fine_loc_type * coarse_loc_type)
+summary(emmean_RT_summ, type = "response")
+```
+
+```{r, warning = FALSE, message= FALSE}
+# Planned Contrast for fine_loc_type, controlling for coarse_loc_type
+encoding_logRT_pairwise <- emmeans(encoding_logRT_model, pairwise ~ fine_loc_type | coarse_loc_type)
+encoding_logRT_pairwise
+```
+
+```{r}
+# Check model fit
+simulationOutput_RT <- simulateResiduals(fittedModel = encoding_logRT_model, plot = F)
+plot(simulationOutput_RT)
+```
+
+```{r}
+plot_model(encoding_logRT_model, type = "int", terms = c("Coarse-level Position Type", "Fine-level Position Type"), colors = c("#00718B", "#7CCBA2"), dot.size = 3.5, line.size = 1.1) + 
+  theme_classic() +
+  theme(aspect.ratio = 1.1, axis.text = element_text(size = 12)) +
+  #aes(color=group) +
+  #font_size(axis_title.x = 13, axis_title.y = 13,labels.x = 14, labels.y = 14) + 
+  labs(x = "Coarse-level Position Type", y = "Log(Reading Time)", title = NULL, size = 8) 
+```
+
+### Supplemental: Fit a model that additionally controls for number of syllables in each sentence
+
+```{r}
+encoding_rt_data_new$scale_num_syllable <- scale(encoding_rt_data_new$num_syllable)
+encoding_rt_data_new %>% ggplot(aes(x = scale_num_syllable)) +
+  geom_histogram()
+```
+
+```{r}
+encoding_logRT_syllable_model <- lmer(logRT ~ coarse_loc_type * fine_loc_type + stimuli_type + scale_num_syllable + (stimuli_type + scale_num_syllable | run_id) + (1|stimuli_name), data = encoding_rt_data_new, control = cl_a) 
+summ(encoding_logRT_syllable_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r, warning = FALSE, message= FALSE}
+emmeans(encoding_logRT_syllable_model, pairwise ~ fine_loc_type | coarse_loc_type)
+```
+
+```{r}
+anova(encoding_logRT_syllable_model, type = "III")
+```
+
+### Supplemental: Figure S2 - RT plot by sentence_loc
+```{r, warning=FALSE, message=FALSE}
+encoding_rt_data_byLocSumm <- encoding_rt_data_new %>% 
+  group_by(sentence_index, fine_loc_type) %>% 
+  summarize(meanRT = mean(rt),
+            sdRT = sd(rt),
+            semRT = std.error(rt)) 
+```
+
+```{r}
+encoding_rt_data_byLocSumm$sentence_index_f <- as.factor(encoding_rt_data_byLocSumm$sentence_index)
+
+encoding_rt_data_byLocSumm %>% 
+  ggplot(aes(x = sentence_index_f, y = meanRT, fill = fine_loc_type)) +
+    geom_bar(stat = "identity") +
+    geom_errorbar(aes(x = sentence_index, ymin = meanRT - semRT, ymax = meanRT + semRT), width=0.4, colour="orange", alpha=0.9, size = 0.8) + 
+  labs(x = "Sentence Position", y = "Mean Reading Time (ms)", fill = "Fine-level Position Type")
+```
+
+# 3. Data Analysis of Recency Judgment Accuracy
+
+Hypothesis: Semantic knowledge facilitates temporal order memory. Whether the presence of event boundary impairs or facilitates temporal order memory depends on whether semantic facilitation is on coarse-level events or on fine-level events. (Interaction between narrative_type and pair_type) 
+
+  - When there is semantic knowledge that helps people infer the temporal order between coarse-level events, temporal order memory of across-event pairs (CS_across pairs) will be better than when there is no semantic knowledge facilitation (FS_across and CS_within pairs). 
+  - Similarly, when there is semantic knowledge facilitation among fine-level events, temporal order memory of within-event pairs (FS_within pairs) will be better than when there is no semantic knowledge facilitation (CS_within and FS_across pairs). 
+
+    - Model: Mixed Effects Logistic Regression Model
+    - Outcome variable: Temporal Order Memory Accuracy (0/1)
+    - Predictors: stimuli_type (CS narrative vs. FS narrative) * pair_type (across-event vs. within-event)
+    - Random Effects: run_id (subject) + each_pair (different test pairs)
+
+```{r}
+mean(TOM_data$TOM_result)
+sd(TOM_data$TOM_result)
+std.error(TOM_data$TOM_result)
+```
+
+
+```{r}
+# as.factor() certain trials
+TOM_data <- mutate(TOM_data, run_id = as.factor(run_id), TOM_result = as.factor(TOM_result))
+TOM_data_new <- TOM_data
+```
+
+```{r}
+contrasts(TOM_data_new$pair_type) <- contr.sum(2) 
+contrasts(TOM_data_new$stimuli_type) <- contr.sum(2) 
+contrasts(TOM_data_new$pair_type)
+contrasts(TOM_data_new$stimuli_type)
+```
+
+```{r}
+# Model 1: Random slope of stimuli_type * pair_type by subject, and random intercept of each_pair
+TOM_accuracy_maximal_model <- glmer(TOM_result ~ stimuli_type * pair_type + (stimuli_type * pair_type |run_id) + (1|each_pair), data = TOM_data_new, family = binomial, control = cl1)
+ 
+# Model 2: Random slopes of stimuli_type by subject, and random intercept of each_pair
+TOM_accuracy_SlopeStimuliType_model <- glmer(TOM_result ~ stimuli_type * pair_type + (stimuli_type |run_id) + (1|each_pair), data = TOM_data_new, family = binomial, control = cl1)
+
+# Model 3: Random slopes of pair_type by subject, and random intercept of each_pair
+TOM_accuracy_SlopePairType_model <- glmer(TOM_result ~ stimuli_type * pair_type + (pair_type |run_id) + (1|each_pair), data = TOM_data_new, family = binomial, control = cl1)
+
+# Model 4: Random intercepts of subject and each_pair
+TOM_accuracy_Intercept_model <- glmer(TOM_result ~ stimuli_type * pair_type + (1|run_id) + (1|each_pair), data = TOM_data_new, family = binomial)
+
+# Model Comparison favors Model 4 (Random Intercepts of Subject and Test Pair)
+anova(TOM_accuracy_Intercept_model, TOM_accuracy_SlopePairType_model, TOM_accuracy_SlopeStimuliType_model, TOM_accuracy_maximal_model)
+```
+
+```{r}
+# Select Model 4 as the final model
+TOM_accuracy_model <- TOM_accuracy_Intercept_model
+summ(TOM_accuracy_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r}
+Anova(TOM_accuracy_model, type = "III")
+```
+
+```{r}
+emmean_TOM_summ <- emmeans(TOM_accuracy_model, specs = ~ stimuli_type * pair_type)
+summary(emmean_TOM_summ, type = "response")
+```
+
+```{r}
+# Set up comparisons
+CS_across = c(1,0,0,0)
+FS_across = c(0,1,0,0)
+CS_within = c(0,0,1,0)
+FS_within = c(0,0,0,1)
+```
+
+```{r}
+# Planned Contrast - Interaction between stimuli_type and pair_type
+contrast(emmean_TOM_summ, method = list("FS_within - CS_within" = FS_within - CS_within,
+                                         "FS_within - FS_across" = FS_within - FS_across,
+                                         "CS_across - FS_across" = CS_across - FS_across,
+                                         "CS_across - CS_within" = CS_across - CS_within), 
+         adjust = "none")
+```
+
+```{r}
+TOM_accuracy_pairwise <- emmeans(TOM_accuracy_model, pairwise ~ stimuli_type * pair_type)
+TOM_accuracy_pairwise
+```
+
+```{r}
+# Check model residuals and assumptions
+simulationOutput_TOM <- simulateResiduals(fittedModel = TOM_accuracy_model, plot = F)
+plot(simulationOutput_TOM)
+check_collinearity(TOM_accuracy_model) # Low Multicollinearity
+```
+
+```{r}
+# Plot contrasts - interaction between narrative_type and pair_type
+plot_model(TOM_accuracy_model, type = "int", c("pair_type", "stimuli_type"), colors = c("#EE8227", "#79ADD6"), dot.size = 3.5, line.size = 1.1, axis.labels = c("CS Narrative", "FS Narrative")) + 
+  scale_y_continuous(limits = c(0.5, 1), breaks = c(0.5, 0.6, 0.7, 0.8, 0.9, 1), labels = scales::percent) + theme_classic() +
+  theme(aspect.ratio = 2, axis.text = element_text(size = 12)) +
+  #aes(color=group) +
+  #font_size(axis_title.x = 13, axis_title.y = 13,labels.x = 14, labels.y = 14) + 
+  labs(x = "Narrative Type", y = "Estimated Recency Judgment Accuracy", title = NULL, size = 2) 
+```
+
+# 4. Data Analysis of Recency Judgment Confidence
+
+Hypothesis: When there is no facilitation of semantic knowledge, the existence of coarse-level event information may increase people's confidence in making temporal order judgments - Temporal order memory confidence for FS_across pairs will be higher than CS_within pairs, regardless of the actual accuracy of the judgment. 
+
+  - Model: Mixed Effects Logistic Regression Model
+  - Outcome variable: TOM_BinaryConfidence (High vs. Low Confidence)
+  - Predictor: TOM_result (+1 = correct, -1 = incorrect), Event Pair Type (Dummy Coded, FS_within as reference group)
+  - Random Effects: run_id (subject) + each_pair (different test pairs)
+
+```{r}
+mean(TOM_Conf_data$TOM_Conf)
+sd(TOM_Conf_data$TOM_Conf)
+std.error(TOM_Conf_data$TOM_Conf)
+```
+
+```{r}
+TOM_Conf_data %>% group_by(stimuli_type, pair_type) %>% summarize(meanTOM_Conf = mean(TOM_Conf))
+```
+
+```{r}
+# Dummy Coding event_pair_type:  
+# FS_across as the reference group. Three Dummy Variables: eventPair_FSw, eventPair_FSa, eventPair_CSw. 
+# We are interested in the comparison between FS_across (reference group) and CS_within (eventPair_CSw = 1)
+TOM_Conf_data$event_pair_type <- as.character(TOM_Conf_data$event_pair_type)
+TOM_Conf_data$eventPair_FSw <- ifelse(TOM_Conf_data$event_pair_type == "FS_within", 1, 0)
+TOM_Conf_data$eventPair_CSa <- ifelse(TOM_Conf_data$event_pair_type == "CS_across", 1, 0)
+TOM_Conf_data$eventPair_CSw <- ifelse(TOM_Conf_data$event_pair_type == "CS_within", 1, 0)
+
+# Factorization
+TOM_Conf_data$eventPair_FSw <- as.factor(TOM_Conf_data$eventPair_FSw)
+TOM_Conf_data$eventPair_CSa <- as.factor(TOM_Conf_data$eventPair_CSa)
+TOM_Conf_data$eventPair_CSw <- as.factor(TOM_Conf_data$eventPair_CSw)
+
+# Dummy Coding TOM_Conf_Group: Low Confidence = 0, High Confidence = 1
+TOM_Conf_data <- TOM_Conf_data %>% mutate(TOM_ConfGroup_dumm = dplyr::recode(TOM_ConfGroup,
+                                             "Low Confidence" = 0,
+                                             "High Confidence" = 1))
+TOM_Conf_data$TOM_ConfGroup_dumm <- as.factor(TOM_Conf_data$TOM_ConfGroup_dumm)
+```
+
+```{r}
+TOM_Conf_data_new <- TOM_Conf_data
+TOM_Conf_data_new$TOM_result <- as.factor(TOM_Conf_data_new$TOM_result)
+TOM_Conf_data_new$TOM_result <- relevel(TOM_Conf_data_new$TOM_result, ref = "1")
+contrasts(TOM_Conf_data_new$TOM_result) <- contr.sum(2)
+```
+
+```{r}
+# Contrast coding for TOM_result: incorrect = -1, correct = 1 
+contrasts(TOM_Conf_data_new$TOM_result)
+contrasts(TOM_Conf_data_new$eventPair_CSw)
+contrasts(TOM_Conf_data_new$eventPair_CSa)
+contrasts(TOM_Conf_data_new$eventPair_FSw)
+```
+
+```{r}
+# Model 1: Random Slope of TOM_result by subject, and random intercept of each_pair
+TOM_Conf_SlopeTOMResult_model <- glmer(TOM_ConfGroup_dumm ~ TOM_result + eventPair_CSw + eventPair_CSa + eventPair_FSw + (TOM_result|run_id) + (1|each_pair), data = TOM_Conf_data_new, family = binomial, control = cl1)
+
+# Model 2: Random Slope of pair_type by subject, and random intercept of each_pair
+TOM_Conf_SlopePairType_model <- glmer(TOM_ConfGroup_dumm ~ TOM_result + eventPair_CSw + eventPair_CSa + eventPair_FSw + ((eventPair_CSw + eventPair_CSa + eventPair_FSw)|run_id) + (1|each_pair), data = TOM_Conf_data_new, family = binomial, control = cl1)
+
+# Model 3: Random Intercepts of subject and each_pair
+TOM_Conf_Intercept_model <- glmer(TOM_ConfGroup_dumm ~ TOM_result + eventPair_CSw + eventPair_CSa + eventPair_FSw + (1|run_id) + (1|each_pair), data = TOM_Conf_data_new, family = binomial)
+
+# Model Comparison favors Model 2: Random Slope of pair_type by subject, and random intercept of each_pair
+anova(TOM_Conf_Intercept_model, TOM_Conf_SlopeTOMResult_model, TOM_Conf_SlopePairType_model)
+```
+
+```{r}
+# Select Model 2
+TOM_Conf_model <- TOM_Conf_SlopePairType_model
+summ(TOM_Conf_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r}
+Anova(TOM_Conf_model, type = "III")
+```
+
+```{r}
+# Contrasts for CSw and FSa
+emmeans(TOM_Conf_model, pairwise ~ eventPair_CSw)
+```
+
+```{r}
+# Check residual distribution and model assumptions
+simulationOutput_TOM_Conf <- simulateResiduals(fittedModel = TOM_Conf_model, plot = F)
+plot(simulationOutput_TOM_Conf)
+check_collinearity(TOM_Conf_model) # Low Multicollinearity
+```
+
+
+```{r}
+# Plot the model
+p <- plot_model(TOM_Conf_model, 
+               type = "emm", 
+               terms = c("eventPair_CSw"), 
+               dot.size = 3.5, 
+               line.size = 1.1) 
+
+p$data$group <- as.factor(p$data$x)
+
+# Add a new layer with explicit color mapping
+new_p <- ggplot(p$data, aes(x = x, y = predicted)) +
+  geom_point(aes(color = group), size = 3.5) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high, color = group), 
+                width = 0, size = 1.1) +
+  scale_color_manual(values = c("#EE8227","#79ADD6"), guide = "none") +
+  scale_y_continuous(limits = c(0, 0.8), 
+                    breaks = c(0, 0.2, 0.4, 0.6, 0.8), 
+                    labels = scales::percent) +
+  scale_x_continuous(breaks = c(0, 1), 
+                   expand = expansion(mult = 0.2)) + 
+  geom_text(aes(label = c("FS_across", "CS_within"), 
+                x = x, y = predicted, color = group, 
+            hjust = ifelse(x == min(x), -0.2, 1.2)), 
+            vjust = 0,   # Adjust vertical position
+            size = 4) +   # Adjust text size
+  theme_classic() +
+  theme(aspect.ratio = 2, axis.text = element_text(size = 12), axis.text.x = element_blank(), plot.title = element_text(margin = margin(b = 30))) +
+ # scale_x_continuous(breaks = c(0,1), labels = c("FS_across", "CS_within")) +
+  labs(x = NULL, y = "Estimated Probablities of High Confidence (> 90)")
+new_p
+```
+
+
+# 5. Data Analysis of Temporal Distance Rating
+
+Hypothesis: Temporal distance is rated as farther if two fine-level events span across event boundary. 
+
+  - Model: Mixed Effects Linear Regression Model
+  - Outcome variable: Temporal Distance Rating (1-10)
+  - Predictor: stimuli_type (CS narrative vs. FS narrative) * pair_type (across-event vs. within-event)
+  - Random Effects: run_id (subject) + each_pair (different test pairs)
+
+```{r}
+# as.factor() certain columns
+TD_data <- mutate(TD_data, run_id = as.factor(run_id))
+```
+
+```{r}
+mean(TD_data$TD)
+sd(TD_data$TD)
+std.error(TD_data$TD)
+```
+
+
+```{r}
+summ_TD_aov_graph <- TD_data %>% group_by(event_pair_type) 
+summ_TD_aov_graph %>% ggplot(aes(x = event_pair_type, y = TD, color = event_pair_type)) + geom_jitter() + geom_violin() + labs(x = "Event Pair Type", y = "Temporal Distance Rating")
+```
+
+```{r}
+TD_data_new <- TD_data
+contrasts(TD_data_new$stimuli_type) <- contr.sum(2)
+contrasts(TD_data_new$pair_type) <- contr.sum(2)
+
+contrasts(TD_data_new$stimuli_type)
+contrasts(TD_data_new$pair_type)
+```
+
+```{r}
+# Model 1: Random Slope of stimuli_type * pair_type, and random intercept of each_pair
+TempDistance_Maximal_model <- lmer(TD ~ stimuli_type * pair_type + (stimuli_type * pair_type |run_id) + (1| each_pair), data = TD_data_new, control = cl_a)
+
+# Model 2: Random Slope of stimuli_type by subject, and random intercept of each_pair
+TempDistance_SlopeStimuliType_model <- lmer(TD ~ stimuli_type * pair_type + (stimuli_type |run_id) + (1| each_pair), data = TD_data_new)
+
+# Model 3: Random Slope of pair_type by subject, and random intercept of each_pair
+TempDistance_SlopePairType_model <- lmer(TD ~ stimuli_type * pair_type + (pair_type |run_id) + (1| each_pair), data = TD_data_new)
+
+# Model 4: Random Intercepts of subject and each_pair 
+TempDistance_Intercept_model <- lmer(TD ~ stimuli_type * pair_type + (1 |run_id) + (1| each_pair), data = TD_data_new)
+
+# Model Comparison favors Model 1: Random Slope of stimuli_type * pair_type, and random intercept of each_pair
+anova(TempDistance_Intercept_model, TempDistance_SlopePairType_model, TempDistance_SlopeStimuliType_model, TempDistance_Maximal_model)
+```
+
+```{r}
+TempDistance_model <- TempDistance_Maximal_model
+summ(TempDistance_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r}
+anova(TempDistance_model, type = "III")
+```
+
+```{r}
+emmean_TD_summ <- emmeans(TempDistance_model, specs = ~ stimuli_type * pair_type)
+summary(emmean_TD_summ, type = "response")
+```
+
+```{r}
+# Planned Contrast
+contrast(emmean_TD_summ, method = list("CS_across - CS_within" = CS_across - CS_within,
+                                         "CS_across - FS_within" = CS_across - FS_within,
+                                         "FS_across - CS_within" = FS_across - CS_within,
+                                         "FS_across - FS_within" = FS_across - FS_within), 
+         adjust = "none")
+```
+
+```{r, warning = FALSE, message=FALSE}
+# Planned Contrast 
+TD_pairwise <- emmeans(TempDistance_model, pairwise ~ stimuli_type * pair_type)
+TD_pairwise
+```
+
+```{r, warning = FALSE, message = FALSE}
+# Check residual distribution and model assumptions
+simulationOutput_TD <- simulateResiduals(fittedModel = TempDistance_model, plot = F)
+plot(simulationOutput_TD)
+check_collinearity(TempDistance_model) # Low Multicollinearity
+```
+
+```{r}
+plot_model(TempDistance_model, type = "pred", terms = c("stimuli_type", "pair_type"), legend.title = "Event Pair Type", colors = c("#EE8227", "#79ADD6"), dot.size = 3.5, line.size = 1.1, axis.labels = c("CS Narrative", "FS Narrative")) + 
+  scale_y_continuous(limits = c(1, 6), breaks = c(1, 2, 3, 4, 5, 6)) + 
+  theme_classic() +
+  theme(aspect.ratio = 2, axis.text = element_text(size = 13)) +
+  #aes(color=group) +
+  #font_size(axis_title.x = 13, axis_title.y = 13,labels.x = 14, labels.y = 14) +
+  labs(title = NULL, x = "Narrative Type", y = "Estimated Temporal Distance", fill = "Fine-level Event Pair Type", size = 8) 
+```
+
+## Supplemental: Control for time elapsed between two sentences during encoding
+
+```{r}
+### Method: Get time elapsed between two sentences in each pair during encoding
+# Define the function (subtraction to get elapsed time for each pair)
+calculate_elapsed_time <- function(df, ranges) {
+  
+  # Initialize an empty list to store results
+  results <- data.frame(
+    run_id = numeric(),
+    stimuli_name = character(),
+    pair_index = numeric(),
+    time_elapsed = numeric()
+  )
+  
+  # Loop over each range and calculate the sum
+  for (range in ranges) {
+    end_trial <- range[1]
+    start_trial <- range[2]
+    TD_trial_num <- range[3]
+    
+    end_trial_row <- df[df$sentence_index == end_trial, ]
+    start_trial_row <- df[df$sentence_index == start_trial, ]
+    
+    # Get Elapsed Time for each pair
+    diff <- end_trial_row$time_elapsed - start_trial_row$time_elapsed 
+    
+    new_result_row <- list(run_id = start_trial_row$run_id, 
+                           stimuli_name = start_trial_row$stimuli_name, 
+                           pair_index = TD_trial_num, 
+                           time_elapsed = diff)
+    
+    results <- rbind(results, new_result_row)
+    
+  }
+  return(results)
+}
+
+stimuli_list <- unique(encoding_rt_main$stimuli_name)
+```
+
+```{r}
+# Define the ranges: elapsed_time - Long (2+3+4+5)
+elapsed_time_ranges_long <- list(c(5, 1, 1), c(6, 2, 2), c(10, 6, 3), c(11, 7, 4), c(15, 11, 5), c(16, 12, 6), c(20, 16, 7), c(21, 17, 8))
+
+# Store elapsed time result in a dataframe
+TD_elapsed_time_df_long <- data.frame(
+  run_id = numeric(),
+  stimuli_name = character(),
+  pair_index = numeric(),
+  time_elapsed = numeric()
+)
+```
+
+```{r}
+# For long range: Run the function for each narrative and store output
+for (id in id_list) {  
+  for (stimuli in stimuli_list) {  
+    
+    subset_df <- encoding_rt_main %>% subset(run_id == id & stimuli_name == stimuli) %>% 
+                 dplyr::select('run_id', 'stimuli_name', 'sentence_index', 'time_elapsed')
+    
+    each_narrative_df <- calculate_elapsed_time(subset_df, elapsed_time_ranges_long)
+    
+    TD_elapsed_time_df_long <- rbind(TD_elapsed_time_df_long, each_narrative_df)
+  }
+}
+```
+
+```{r}
+TD_elapsed_time_df_long <- TD_elapsed_time_df_long %>% 
+  mutate(person_stimuli_index = paste(run_id, stimuli_name, sep = "_"), 
+         TD_unique_trial_index = paste(person_stimuli_index, pair_index, sep = "_")) %>% 
+  rename(time_elapsed_long = time_elapsed)
+
+TD_elapsed_time_df_long_simple <- TD_elapsed_time_df_long %>% 
+  dplyr::select(TD_unique_trial_index, time_elapsed_long)
+```
+
+```{r}
+NEW_TD_data <- TempOrder_data %>% 
+  mutate(TD_unique_trial_index = paste(run_id, each_pair, sep = "_"))
+
+# Add elapsed time data
+NEW_TD_data <- left_join(NEW_TD_data, TD_elapsed_time_df_long_simple, by = "TD_unique_trial_index")
+
+NEW_TD_data <- NEW_TD_data %>% filter(excluded_by_TD_rt == FALSE)
+```
+
+```{r}
+# Calculate encoding_rt upper limit: 3SD above mean 
+TD_elapsed_time_upperLim <- as.numeric(NEW_TD_data %>% summarize(upperLim = mean(time_elapsed_long) + 3 * sd(time_elapsed_long)))
+TD_elapsed_time_upperLim 
+
+# Tag all the trials that are excluded by rt < 300 or > 3SD above mean
+NEW_TD_data$excluded_by_elapsed_time <- ifelse(NEW_TD_data$time_elapsed_long > TD_elapsed_time_upperLim | NEW_TD_data$time_elapsed_long < 300, yes = TRUE, no = FALSE)
+
+NEW_TD_data_seg <- NEW_TD_data %>% filter(excluded_by_elapsed_time == FALSE)
+
+(nrow(NEW_TD_data) - nrow(NEW_TD_data_seg))/nrow(NEW_TD_data)
+```
+
+```{r}
+NEW_TD_data_seg %>% group_by(stimuli_type, pair_type) %>% summarize(mean_time_elapsed_long = mean(time_elapsed_long), sd_time_elapsed_long = sd(time_elapsed_long), ntrial = n())
+```
+
+```{r}
+### Rerun TD Analysis with elapsed time as a covariate
+contrasts(NEW_TD_data_seg$stimuli_type) <- contr.sum(2)
+contrasts(NEW_TD_data_seg$pair_type) <- contr.sum(2)
+
+contrasts(NEW_TD_data_seg$stimuli_type)
+contrasts(NEW_TD_data_seg$pair_type)
+```
+
+```{r}
+NEW_TD_data_seg$scale_time_elapsed_long <- scale(NEW_TD_data_seg$time_elapsed_long)
+NEW_TD_data_seg %>% ggplot(aes(x = scale_time_elapsed_long)) + geom_histogram()
+```
+
+```{r}
+NEW_TD_model <- lmer(TD ~ stimuli_type * pair_type + scale_time_elapsed_long + (stimuli_type * pair_type |run_id) + (1| each_pair), data = NEW_TD_data_seg, control = cl_a)
+summ(NEW_TD_model, digits = getOption("jtools-digits", 4))
+```
+
+```{r}
+anova(NEW_TD_model, type = "III")
+```
+
+```{r}
+plot_model(NEW_TD_model, type = "pred", terms = c("stimuli_type", "pair_type"), legend.title = "Event Pair Type", colors = c("#EE8227", "#79ADD6"), dot.size = 3.5, line.size = 1.1, axis.labels = c("CS Narrative", "FS Narrative")) + 
+  scale_y_continuous(limits = c(1, 6), breaks = c(1, 2, 3, 4, 5, 6)) + 
+  theme_classic() +
+  theme(aspect.ratio = 2, axis.text = element_text(size = 13)) +
+  #aes(color=group) +
+  #font_size(axis_title.x = 13, axis_title.y = 13,labels.x = 14, labels.y = 14) +
+  labs(title = "Supplemental - TD model", x = "Narrative Type", y = "Estimated Temporal Distance", fill = "Fine-level Event Pair Type", size = 8) 
+```
+
+```{r}
+emmean_NEW_TD_summ <- emmeans(NEW_TD_model, specs = ~ stimuli_type * pair_type)
+summary(emmean_NEW_TD_summ, type = "response")
+```
+
+```{r}
+# Planned Contrast
+contrast(emmean_NEW_TD_summ, method = list("CS_across - CS_within" = CS_across - CS_within,
+                                         "CS_across - FS_within" = CS_across - FS_within,
+                                         "FS_across - CS_within" = FS_across - CS_within,
+                                         "FS_across - FS_within" = FS_across - FS_within), 
+         adjust = "none")
+```
+
+```{r, warning = FALSE, message = FALSE}
+# Check residual distribution and model assumptions
+simulationOutput_NEW_TD <- simulateResiduals(fittedModel = TempDistance_model, plot = F)
+plot(simulationOutput_TD)
+check_collinearity(TempDistance_model) # Low Multicollinearity
+```
